@@ -330,7 +330,7 @@ class USBAnalyzerApplet(Elaboratable):
         m.submodules.analyzer = analyzer = USBAnalyzer(utmi, speed_selection)
 
         # Follow this with a HyperRAM FIFO for additional buffering.
-        reset_on_start = ResetInserter(analyzer.discarding)
+        reset_on_start = ResetInserter(analyzer.starting)
         m.submodules.psram_fifo = psram_fifo = reset_on_start(
             HyperRAMPacketFIFO(out_fifo_depth=4096))
 
@@ -347,8 +347,8 @@ class USBAnalyzerApplet(Elaboratable):
             # Flush endpoint when analyzer is idle with capture disabled.
             stream_ep.flush             .eq(analyzer.idle & ~analyzer.capture_enable),
 
-            # Discard data buffered by endpoint when the analyzer discards its data.
-            stream_ep.discard           .eq(analyzer.discarding),
+            # Discard old data buffered by endpoint when the analyzer starts.
+            stream_ep.discard           .eq(analyzer.starting),
 
             # USB stream pipeline.
             psram_fifo.input            .stream_eq(analyzer.stream),
