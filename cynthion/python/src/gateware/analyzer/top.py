@@ -42,7 +42,7 @@ from usb_protocol.emitters.descriptors.standard import get_string_descriptor
 from usb_protocol.types.descriptors.microsoft10 import RegistryTypes
 
 from .analyzer                           import USBAnalyzer
-from .fifo                               import Stream16to8, StreamFIFO
+from .fifo                               import Stream16to8, StreamFIFO, HyperRAMPacketFIFO
 
 import cynthion
 
@@ -329,8 +329,11 @@ class USBAnalyzerApplet(Elaboratable):
         # Create a USB analyzer.
         m.submodules.analyzer = analyzer = USBAnalyzer(utmi_interface=utmi)
 
-        # Add an additional FIFO for 'sync' to 'usb' crossing.
+        # Follow this with a HyperRAM FIFO for additional buffering.
         reset_on_start = ResetInserter(analyzer.discarding)
+        m.submodules.psram_fifo = psram_fifo = reset_on_start(HyperRAMPacketFIFO())
+
+        # Add an additional FIFO for 'sync' to 'usb' crossing.
         m.submodules.out_fifo = out_fifo = StreamFIFO(reset_on_start(
             AsyncFIFO(width=16, depth=4096, r_domain="usb", w_domain="sync")))
 
@@ -348,7 +351,8 @@ class USBAnalyzerApplet(Elaboratable):
             stream_ep.discard           .eq(analyzer.discarding),
 
             # USB stream pipeline.
-            out_fifo.input              .stream_eq(analyzer.stream),
+            psram_fifo.input            .stream_eq(analyzer.stream),
+            out_fifo.input              .stream_eq(psram_fifo.output),
             s16to8.input                .stream_eq(out_fifo.output),
             stream_ep.stream            .stream_eq(s16to8.output),
 
