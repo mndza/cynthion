@@ -5,8 +5,33 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 from amaranth import Elaboratable, Module, Signal, Cat
+from amaranth.lib.fifo import SyncFIFO
 
 from luna.gateware.stream import StreamInterface
+
+
+class StreamFIFO(Elaboratable):
+    def __init__(self, fifo):
+        self.fifo   = fifo
+        self.input  = StreamInterface(payload_width=fifo.width)
+        self.output = StreamInterface(payload_width=fifo.width)
+
+    def elaborate(self, platform):
+        m = Module()
+
+        m.submodules.fifo = self.fifo
+
+        m.d.comb += [
+            self.fifo.w_data    .eq(self.input.payload),
+            self.fifo.w_en      .eq(self.input.valid),
+            self.input.ready    .eq(self.fifo.w_rdy),
+
+            self.output.payload .eq(self.fifo.r_data),
+            self.output.valid   .eq(self.fifo.r_rdy),
+            self.fifo.r_en      .eq(self.output.ready),
+        ]
+
+        return m
 
 
 class Stream16to8(Elaboratable):
