@@ -42,7 +42,7 @@ from usb_protocol.emitters.descriptors.standard import get_string_descriptor
 from usb_protocol.types.descriptors.microsoft10 import RegistryTypes
 
 from .analyzer                           import USBAnalyzer
-from .fifo                               import Stream16to8, StreamFIFO
+from .fifo                               import Stream16to8, StreamFIFO, StreamSkidBuffer
 
 import cynthion
 
@@ -328,6 +328,7 @@ class USBAnalyzerApplet(Elaboratable):
 
         # Create a USB analyzer.
         m.submodules.analyzer = analyzer = USBAnalyzer(utmi_interface=utmi)
+        m.submodules.skid     = skid     = StreamSkidBuffer(16, reg_output=True)
 
         # Add an additional FIFO for 'sync' to 'usb' crossing.
         reset_on_start = ResetInserter(analyzer.discarding)
@@ -348,7 +349,8 @@ class USBAnalyzerApplet(Elaboratable):
             stream_ep.discard           .eq(analyzer.discarding),
 
             # USB stream pipeline.
-            out_fifo.input              .stream_eq(analyzer.stream),
+            skid.input                  .stream_eq(analyzer.stream),
+            out_fifo.input              .stream_eq(skid.output),
             s16to8.input                .stream_eq(out_fifo.output),
             stream_ep.stream            .stream_eq(s16to8.output),
 
@@ -356,7 +358,7 @@ class USBAnalyzerApplet(Elaboratable):
 
             # LED indicators.
             platform.request("led", 0).o  .eq(analyzer.capturing),
-            platform.request("led", 1).o  .eq(analyzer.stream.valid),
+            platform.request("led", 1).o  .eq(s16to8.output.valid),
             platform.request("led", 2).o  .eq(analyzer.overrun),
 
             platform.request("led", 3).o  .eq(utmi.session_valid),

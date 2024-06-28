@@ -4,7 +4,7 @@
 # Copyright (c) 2024 Great Scott Gadgets <info@greatscottgadgets.com>
 # SPDX-License-Identifier: BSD-3-Clause
 
-from amaranth import Elaboratable, Module, Signal, Cat
+from amaranth import Elaboratable, Module, Signal, Cat, Mux
 from amaranth.lib.fifo import SyncFIFO
 
 from luna.gateware.stream import StreamInterface
@@ -71,5 +71,44 @@ class Stream16to8(Elaboratable):
                         data_shift .eq(input_data),
                         odd_byte   .eq(1),
                     ]
+
+        return m
+
+
+class StreamSkidBuffer(Elaboratable):
+    def __init__(self, payload_width, reg_output=False):
+        self.input      = StreamInterface(payload_width)
+        self.output     = StreamInterface(payload_width)
+        self.reg_output = reg_output
+
+    def elaborate(self, platform):
+        m = Module()
+
+        # Internal signals.
+        r_valid     = Signal()
+        in_payload  = Cat(self.input.payload, self.input.last)
+        out_payload = Cat(self.output.payload, self.output.last)
+        r_payload   = Signal.like(in_payload, reset_less=True)
+
+        # Internal storage is only valid when there is incoming
+        # data but the consumer is not ready.
+        with m.If((self.input.ready & self.input.valid) & (self.output.valid & ~self.output.ready)):
+            m.d.sync += r_valid.eq(1)
+        with m.Elif(self.output.ready):
+            m.d.sync += r_valid.eq(0)
+
+        # Keep storing input data.
+        with m.If(self.input.ready & self.input.valid):
+            m.d.sync += r_payload.eq(in_payload)
+        
+        # As long as our internal buffer is empty, we accept a new sample
+        # This internal buffer provides the "elasticity" needed due to
+        # the register delay in the `ready` signal path.
+        m.d.comb += self.input.ready.eq(~r_valid)
+
+        # Drive output valid and data signals.
+        out_domain = m.d.comb if not self.reg_output else m.d.sync
+        out_domain += self.output.valid.eq(self.input.valid | r_valid)
+        out_domain += out_payload.eq(Mux(r_valid, r_payload, in_payload))
 
         return m

@@ -14,7 +14,7 @@ from enum              import IntEnum
 from luna.gateware.stream import StreamInterface
 from luna.gateware.test   import LunaGatewareTestCase, usb_domain_test_case
 
-from .fifo import Stream16to8
+from .fifo import Stream16to8, StreamSkidBuffer
 
 
 class USBAnalyzer(Elaboratable):
@@ -388,13 +388,15 @@ class USBAnalyzerTest(USBAnalyzerTestBase):
         ])
         m = Module()
         m.submodules.analyzer = self.analyzer = USBAnalyzer(utmi_interface=self.utmi, mem_depth=128)
+        m.submodules.skid     = skid          = StreamSkidBuffer(16, reg_output=True)
 
         reset_on_start = ResetInserter(self.analyzer.discarding)
         m.submodules.out_fifo = out_fifo = StreamFIFO(reset_on_start(
             AsyncFIFO(width=16, depth=4096, r_domain="usb", w_domain="sync")))
         m.submodules.s16to8 = s16to8 = DomainRenamer("usb")(Stream16to8())
         m.d.comb += [
-            out_fifo.input.stream_eq(self.analyzer.stream),
+            skid.input.stream_eq(self.analyzer.stream),
+            out_fifo.input.stream_eq(skid.output),
             s16to8.input.stream_eq(out_fifo.output),
         ]
         self.stream = s16to8.output
@@ -532,12 +534,14 @@ class USBAnalyzerStackTest(USBAnalyzerTestBase):
         m = Module()
         m.submodules.translator = self.translator = UTMITranslator(ulpi=self.ulpi, handle_clocking=False)
         m.submodules.analyzer   = self.analyzer   = USBAnalyzer(utmi_interface=self.translator, mem_depth=128)
+        m.submodules.skid       = skid            = StreamSkidBuffer(16, reg_output=True)
         reset_on_start = ResetInserter(self.analyzer.discarding)
         m.submodules.out_fifo = out_fifo = StreamFIFO(reset_on_start(
             AsyncFIFO(width=16, depth=4096, r_domain="usb", w_domain="sync")))
         m.submodules.s16to8 = s16to8 = DomainRenamer("usb")(Stream16to8())
         m.d.comb += [
-            out_fifo.input.stream_eq(self.analyzer.stream),
+            skid.input.stream_eq(self.analyzer.stream),
+            out_fifo.input.stream_eq(skid.output),
             s16to8.input.stream_eq(out_fifo.output),
         ]
         self.stream = s16to8.output
