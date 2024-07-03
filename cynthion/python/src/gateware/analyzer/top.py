@@ -17,7 +17,6 @@ from datetime import datetime
 from enum import IntEnum, IntFlag
 
 from amaranth                            import Signal, Elaboratable, Module, DomainRenamer, ResetInserter
-from amaranth.lib.fifo                   import AsyncFIFO
 from amaranth.build.res                  import ResourceError
 from usb_protocol.emitters               import DeviceDescriptorCollection
 from usb_protocol.types                  import USBRequestType, USBRequestRecipient
@@ -42,7 +41,7 @@ from usb_protocol.emitters.descriptors.standard import get_string_descriptor
 from usb_protocol.types.descriptors.microsoft10 import RegistryTypes
 
 from .analyzer                           import USBAnalyzer
-from .fifo                               import Stream16to8, StreamFIFO, HyperRAMPacketFIFO
+from .fifo                               import Stream16to8, HyperRAMPacketFIFO, StreamSyncUsbConverter
 
 import cynthion
 
@@ -331,14 +330,13 @@ class USBAnalyzerApplet(Elaboratable):
 
         # Follow this with a HyperRAM FIFO for additional buffering.
         reset_on_start = ResetInserter(analyzer.discarding)
-        m.submodules.psram_fifo = psram_fifo = reset_on_start(HyperRAMPacketFIFO())
+        m.submodules.psram_fifo = psram_fifo = reset_on_start(HyperRAMPacketFIFO(out_fifo_depth=4096))
 
-        # Add an additional FIFO for 'sync' to 'usb' crossing.
-        m.submodules.out_fifo = out_fifo = StreamFIFO(reset_on_start(
-            AsyncFIFO(width=16, depth=4096, r_domain="usb", w_domain="sync")))
+        # Add a special stream clock converter for 'sync' to 'usb' crossing.
+        m.submodules.clk_conv = clk_conv = reset_on_start(StreamSyncUsbConverter())
 
         # Convert the 16-bit into an 8-bit one for output.
-        m.submodules.s16to8 = s16to8 = DomainRenamer("usb")(Stream16to8())
+        m.submodules.s16to8 = s16to8 = DomainRenamer("usb")(reset_on_start(Stream16to8()))
 
         m.d.comb += [
             # Connect enable signal to host-controlled state register.
@@ -352,8 +350,8 @@ class USBAnalyzerApplet(Elaboratable):
 
             # USB stream pipeline.
             psram_fifo.input            .stream_eq(analyzer.stream),
-            out_fifo.input              .stream_eq(psram_fifo.output),
-            s16to8.input                .stream_eq(out_fifo.output),
+            clk_conv.input              .stream_eq(psram_fifo.output),
+            s16to8.input                .stream_eq(clk_conv.output),
             stream_ep.stream            .stream_eq(s16to8.output),
 
             usb.connect                 .eq(1),

@@ -36,9 +36,11 @@ class StreamFIFO(Elaboratable):
 
 
 class HyperRAMPacketFIFO(Elaboratable):
-    def __init__(self):
+    def __init__(self, out_fifo_depth=None):
         self.input  = StreamInterface(payload_width=16)
         self.output = StreamInterface(payload_width=16)
+        # A minimum output FIFO depth of 2 prevents data loss during consumer stalls.
+        self.out_fifo_depth = max(out_fifo_depth, 2) if out_fifo_depth is not None else 2
 
     def elaborate(self, platform):
         m = Module()
@@ -68,8 +70,9 @@ class HyperRAMPacketFIFO(Elaboratable):
         with m.If(psram.write_ready):
             m.d.sync += write_address.eq(write_address + 1)
 
-        # This tiny output buffer prevents data loss during consumer stalls
-        m.submodules.out_fifo = out_fifo = SyncFIFO(width=16, depth=2)
+        # This output buffer prevents data loss during consumer stalls. It can also be used 
+        # to gather entire bursts from the HyperRAM if `out_fifo_depth` is big enough.
+        m.submodules.out_fifo = out_fifo = SyncFIFO(width=16, depth=self.out_fifo_depth)
 
         # Hook up our PSRAM.
         m.d.comb += [
@@ -125,6 +128,28 @@ class HyperRAMPacketFIFO(Elaboratable):
             with m.State("BUSY"):
                 with m.If(psram.idle):
                     m.next = "IDLE"
+
+        return m
+
+
+class StreamSyncUsbConverter(Elaboratable):
+    def __init__(self):
+        self.input     = StreamInterface(payload_width=16)
+        self.output    = StreamInterface(payload_width=16)
+
+    def elaborate(self, platform):
+        m = Module()
+
+        cycle_count = Signal()
+        m.d.sync += cycle_count.eq(cycle_count + 1)
+
+        with m.If(~self.output.valid | self.output.ready):
+            m.d.usb += [
+                self.output.payload .eq(self.input.payload),
+                self.output.valid   .eq(self.input.valid),
+                self.output.last    .eq(self.input.last),
+            ]
+            m.d.comb += self.input.ready.eq(cycle_count)
 
         return m
 
