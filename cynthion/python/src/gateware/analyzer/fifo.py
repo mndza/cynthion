@@ -61,12 +61,8 @@ class HyperRAMPacketFIFO(Elaboratable):
         write_address = Signal(range(depth))
         read_address  = Signal(range(depth))
         word_count    = Signal(range(depth + 1))
-        empty         = Signal()
+        empty         = Signal(reset=1)
         full          = Signal()
-        m.d.comb += [
-            empty .eq(word_count == 0),
-            full  .eq(word_count == depth),
-        ]
 
         # Update word count and pointers using the write and read strobes.
         m.d.sync += word_count.eq(word_count - psram.read_ready + psram.write_ready)
@@ -101,16 +97,7 @@ class HyperRAMPacketFIFO(Elaboratable):
             self.output.payload   .eq(out_fifo.r_data),
             self.output.valid     .eq(out_fifo.r_rdy),
             out_fifo.r_en         .eq(self.output.ready),
-        ]
-
-        # Generation of the final word condition.
-        is_write = Signal()
-        with m.If(is_write):
-            # WRITE: Finish when there's no space or incoming data.
-            m.d.comb += psram.final_word.eq((word_count == (depth-1)) | (in_fifo.level == 1))
-        with m.Else():
-            # READ: Finish when PSRAM is empty or the output FIFO is full.
-            m.d.comb += psram.final_word.eq((word_count == 1) | (out_fifo.level == out_fifo.depth - 1))
+        ]            
 
         #
         # HyperRAM Packet FIFO state machine
@@ -126,8 +113,7 @@ class HyperRAMPacketFIFO(Elaboratable):
                         psram.perform_write     .eq(1),
                         psram.start_transfer    .eq(1),
                     ]
-                    m.d.sync += is_write.eq(1)
-                    m.next = "BUSY"
+                    m.next = "BUSY_WRITE"
 
                 # ...otherwise, read when FIFO is less than half full.
                 with m.Elif(~empty & (out_fifo.level[-1] == 0)):
@@ -136,11 +122,30 @@ class HyperRAMPacketFIFO(Elaboratable):
                         psram.perform_write     .eq(0),
                         psram.start_transfer    .eq(1),
                     ]
-                    m.d.sync += is_write.eq(0)
-                    m.next = "BUSY"
+                    m.next = "BUSY_READ"
 
             # BUSY: Wait for the PSRAM to recover before a new transaction.
-            with m.State("BUSY"):
+            with m.State("BUSY_READ"):
+                # Finish when there's no space or incoming data.
+                m.d.comb += psram.final_word.eq((word_count == 1) | (out_fifo.level == out_fifo.depth - 1))
+                with m.If(psram.read_ready):
+                    m.d.sync += [
+                        word_count  .eq(word_count - 1),
+                        empty       .eq(word_count == 1),
+                        full        .eq(0),
+                    ]
+                with m.If(psram.idle):
+                    m.next = "IDLE"
+
+            with m.State("BUSY_WRITE"):
+                # Finish when PSRAM is empty or the consumer stalls the output stream.
+                m.d.comb += psram.final_word.eq((word_count == (depth-1)) | (in_fifo.level == 1))
+                with m.If(psram.write_ready):
+                    m.d.sync += [
+                        word_count  .eq(word_count + 1),
+                        full        .eq(word_count == depth - 1),
+                        empty       .eq(0),
+                    ]
                 with m.If(psram.idle):
                     m.next = "IDLE"
 
