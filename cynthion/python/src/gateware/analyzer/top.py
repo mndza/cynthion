@@ -328,17 +328,21 @@ class USBAnalyzerApplet(Elaboratable):
         # Create a USB analyzer.
         m.submodules.analyzer = analyzer = USBAnalyzer(utmi_interface=utmi)
 
+        # Add a special stream clock converter for 'sync' to 'hyperram' crossing.
+        m.submodules.clk_conv_pre = clk_conv_pre = StreamFIFO(
+            AsyncFIFOReadReset(width=16, depth=16, r_domain="hyperram", w_domain="sync"))
+
         # Follow this with a HyperRAM FIFO for additional buffering.
         reset_on_start = ResetInserter(analyzer.discarding)
-        m.submodules.psram_fifo = psram_fifo = reset_on_start(
-            HyperRAMPacketFIFO(out_fifo_depth=128))
+        m.submodules.psram_fifo = psram_fifo = DomainRenamer("hyperram")(reset_on_start(
+            HyperRAMPacketFIFO(out_fifo_depth=128)))
+
+        # Add a special stream clock converter for 'hyperram' to 'usb' crossing.
+        m.submodules.clk_conv_pos = clk_conv_pos = StreamFIFO(
+            AsyncFIFOReadReset(width=16, depth=16, r_domain="usb", w_domain="hyperram"))
 
         # Convert the 16-bit stream into an 8-bit one for output.
-        m.submodules.s16to8 = s16to8 = reset_on_start(Stream16to8())
-
-        # Add a special stream clock converter for 'sync' to 'usb' crossing.
-        m.submodules.clk_conv = clk_conv = StreamFIFO(
-            AsyncFIFOReadReset(width=8, depth=4, r_domain="usb", w_domain="sync"))
+        m.submodules.s16to8 = s16to8 = DomainRenamer("usb")(reset_on_start(Stream16to8()))
 
         m.d.comb += [
             # Connect enable signal to host-controlled state register.
@@ -351,11 +355,14 @@ class USBAnalyzerApplet(Elaboratable):
             stream_ep.discard           .eq(analyzer.discarding),
 
             # USB stream pipeline.
-            psram_fifo.input            .stream_eq(analyzer.stream),
-            s16to8.input                .stream_eq(psram_fifo.output),
-            clk_conv.input              .stream_eq(s16to8.output),
-            clk_conv.fifo.ext_rst       .eq(analyzer.discarding),
-            stream_ep.stream            .stream_eq(clk_conv.output),
+            clk_conv_pre.input          .stream_eq(analyzer.stream),
+            psram_fifo.input            .stream_eq(clk_conv_pre.output),
+            clk_conv_pos.input          .stream_eq(psram_fifo.output),
+            s16to8.input                .stream_eq(clk_conv_pos.output),
+            stream_ep.stream            .stream_eq(s16to8.output),
+
+            clk_conv_pre.fifo.ext_rst   .eq(analyzer.discarding),
+            clk_conv_pos.fifo.ext_rst   .eq(analyzer.discarding),
 
             usb.connect                 .eq(1),
 

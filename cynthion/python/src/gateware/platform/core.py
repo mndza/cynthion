@@ -37,7 +37,8 @@ class CynthionPlatform(LUNAApolloPlatform, LatticeECP5Platform):
     DEFAULT_CLOCK_FREQUENCIES_MHZ = {
         "fast": 240,
         "sync": 120,
-        "usb":  60
+        "usb":  60,
+        "hyperram": 160,
     }
 
     #
