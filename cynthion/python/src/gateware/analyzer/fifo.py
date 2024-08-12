@@ -40,11 +40,12 @@ class StreamFIFO(Elaboratable):
 
 
 class HyperRAMPacketFIFO(Elaboratable):
-    def __init__(self, out_fifo_depth=None):
+    def __init__(self, in_fifo_depth=128, out_fifo_depth=128):
         self.input  = StreamInterface(payload_width=16)
         self.output = StreamInterface(payload_width=16)
+        self.in_fifo_depth  = max(in_fifo_depth, 2)
         # A minimum output FIFO depth of 2 prevents data loss during consumer stalls.
-        self.out_fifo_depth = max(out_fifo_depth, 2) if out_fifo_depth is not None else 2
+        self.out_fifo_depth = max(out_fifo_depth, 2)
 
     def elaborate(self, platform):
         m = Module()
@@ -74,6 +75,9 @@ class HyperRAMPacketFIFO(Elaboratable):
         with m.If(psram.write_ready):
             m.d.sync += write_address.eq(write_address + 1)
 
+        # The input buffer accumulates data for a write burst of the desired length.
+        m.submodules.in_fifo = in_fifo = SyncFIFOBuffered(width=16, depth=self.in_fifo_depth)
+
         # This output buffer prevents data loss during consumer stalls. It can also be used
         # to gather entire bursts from the HyperRAM if `out_fifo_depth` is big enough.
         m.submodules.out_fifo = out_fifo = SyncFIFOBuffered(width=16, depth=self.out_fifo_depth)
@@ -83,8 +87,13 @@ class HyperRAMPacketFIFO(Elaboratable):
             ram_bus.reset.o       .eq(0),
             psram.single_page     .eq(0),
             psram.register_space  .eq(0),
-            psram.write_data      .eq(self.input.payload),
-            self.input.ready      .eq(psram.write_ready),
+
+            in_fifo.w_data        .eq(self.input.payload),
+            in_fifo.w_en          .eq(self.input.valid),
+            self.input.ready      .eq(in_fifo.w_rdy),
+
+            psram.write_data      .eq(in_fifo.r_data),
+            in_fifo.r_en          .eq(psram.write_ready),
 
             # Wire PSRAM -> output FIFO -> output stream
             out_fifo.w_data       .eq(psram.read_data),
@@ -98,7 +107,7 @@ class HyperRAMPacketFIFO(Elaboratable):
         is_write = Signal()
         with m.If(is_write):
             # WRITE: Finish when there's no space or incoming data.
-            m.d.comb += psram.final_word.eq((word_count == (depth-1)) | self.input.last)
+            m.d.comb += psram.final_word.eq((word_count == (depth-1)) | (in_fifo.level == 1))
         with m.Else():
             # READ: Finish when PSRAM is empty or the output FIFO is full.
             m.d.comb += psram.final_word.eq((word_count == 1) | (out_fifo.level == out_fifo.depth - 1))
@@ -111,7 +120,7 @@ class HyperRAMPacketFIFO(Elaboratable):
             # IDLE: Begin a write / read burst operation when ready.
             with m.State("IDLE"):
                 # Write whenever we have input data...
-                with m.If(self.input.valid & ~full):
+                with m.If(~in_fifo.w_rdy & ~full):
                     m.d.comb += [
                         psram.address           .eq(write_address),
                         psram.perform_write     .eq(1),
