@@ -14,7 +14,7 @@ from enum              import IntEnum
 from luna.gateware.stream import StreamInterface
 from luna.gateware.test   import LunaGatewareTestCase, usb_domain_test_case
 
-from .fifo import Stream16to8, StreamFIFO, AsyncFIFOReadReset
+from .fifo import Stream16to8, StreamFIFO, AsyncFIFOReadReset, PaddingRemover
 
 
 class USBAnalyzer(Elaboratable):
@@ -365,11 +365,6 @@ class USBAnalyzerTestBase(LunaGatewareTestCase):
                 break
         self.assertEqual(received_data, expected_data)
 
-        if len(expected_data) % 2 == 1:
-            # There should then be one padding byte.
-            self.assertEqual((yield self.stream.valid), 1)
-            yield
-
         # There should then be no data left.
         self.assertEqual((yield self.stream.valid), 0)
 
@@ -394,11 +389,13 @@ class USBAnalyzerTest(USBAnalyzerTestBase):
 
         reset_on_start = ResetInserter(self.analyzer.discarding)
         m.submodules.s16to8 = s16to8 = reset_on_start(Stream16to8())
+        m.submodules.pad = pad = reset_on_start(PaddingRemover(alignment=2))
         m.submodules.clk_conv = clk_conv = StreamFIFO(
             AsyncFIFOReadReset(width=8, depth=4, r_domain="usb", w_domain="sync"))
         m.d.comb += [
             s16to8.input.stream_eq(self.analyzer.stream),
-            clk_conv.input.stream_eq(s16to8.output),
+            pad.input.stream_eq(s16to8.output),
+            clk_conv.input.stream_eq(pad.output),
             clk_conv.fifo.ext_rst.eq(self.analyzer.discarding),
         ]
         self.stream = clk_conv.output
@@ -570,11 +567,13 @@ class USBAnalyzerStackTest(USBAnalyzerTestBase):
         m.submodules.analyzer   = self.analyzer   = USBAnalyzer(utmi_interface=self.translator, mem_depth=128)
         reset_on_start = ResetInserter(self.analyzer.discarding)
         m.submodules.s16to8 = s16to8 = reset_on_start(Stream16to8())
+        m.submodules.pad = pad = reset_on_start(PaddingRemover(alignment=2))
         m.submodules.clk_conv = clk_conv = StreamFIFO(
             AsyncFIFOReadReset(width=8, depth=4, r_domain="usb", w_domain="sync"))
         m.d.comb += [
             s16to8.input.stream_eq(self.analyzer.stream),
-            clk_conv.input.stream_eq(s16to8.output),
+            pad.input.stream_eq(s16to8.output),
+            clk_conv.input.stream_eq(pad.output),
             clk_conv.fifo.ext_rst.eq(self.analyzer.discarding),
         ]
         self.stream = clk_conv.output
