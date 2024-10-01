@@ -64,7 +64,7 @@ class USBAnalyzer(Elaboratable):
     # Support a maximum payload size of 1024B, plus a 1-byte PID and a 2-byte CRC16.
     MAX_PACKET_SIZE_BYTES = 1024 + 1 + 2
 
-    def __init__(self, *, utmi_interface, mem_depth=4096):
+    def __init__(self, *, utmi_interface, mem_depth=4096, alignment=2):
         """
         Parameters:
             utmi_interface -- A record or elaboratable that presents a UTMI interface.
@@ -73,11 +73,13 @@ class USBAnalyzer(Elaboratable):
         self.utmi = utmi_interface
 
         assert (mem_depth % 2) == 0, "mem_depth must be a power of 2"
+        assert alignment in (2, 4), "packet alignment must be 2 or 4 bytes"
 
         # Internal storage memory.
         self.mem = Memory(width=16, depth=mem_depth, name="analysis_ringbuffer")
         self.mem_size_words = mem_depth
         self.mem_size_bytes = 2 * mem_depth
+        self.alignment = alignment
 
         #
         # I/O port
@@ -108,9 +110,26 @@ class USBAnalyzer(Elaboratable):
         read_word_addr   = Signal.like(mem_read_port.addr)
         fifo_word_count  = Signal.like(mem_read_port.addr)
         write_odd        = Signal()
+        next_word_addr   = Signal.like(write_word_addr)
+        next_byte_addr   = Signal.like(write_byte_addr)
         m.d.comb += Cat(write_odd, write_word_addr).eq(write_byte_addr)
-        next_word_addr   = (write_byte_addr + write_odd)[1:]
 
+        # Packet alignment can be either 16 or 32 bits. 
+        if self.alignment == 2:
+            byte_offset = Signal()
+            m.d.comb += [
+                next_byte_addr.eq((write_byte_addr + write_odd)),
+                next_word_addr.eq((write_byte_addr + write_odd)[1:]),
+                byte_offset   .eq(write_odd),
+            ]
+        elif self.alignment == 4:
+            byte_offset = Signal(2)
+            m.d.comb += [
+                next_byte_addr.eq((write_byte_addr + ((-write_byte_addr)[:2].as_unsigned()))),
+                next_word_addr.eq((write_byte_addr + ((-write_byte_addr)[:2].as_unsigned()))[1:]),
+                byte_offset   .eq(write_byte_addr[:2]),
+            ]
+        
         # Current receive status.
         packet_size     = Signal(16)
         packet_time     = Signal(16)
@@ -204,7 +223,7 @@ class USBAnalyzer(Elaboratable):
                     m.next = "CAPTURE_PACKET"
                     m.d.usb += [
                         header_word_addr   .eq(next_word_addr),
-                        write_byte_addr    .eq(write_byte_addr + write_odd + self.HEADER_SIZE_BYTES),
+                        write_byte_addr    .eq(next_byte_addr + self.HEADER_SIZE_BYTES),
                         packet_size        .eq(0),
                         packet_time        .eq(current_time),
                         current_time       .eq(0),
@@ -219,7 +238,7 @@ class USBAnalyzer(Elaboratable):
                         event_code         .eq(USBAnalyzerEvent.NONE),
                     ]
                     m.d.usb += [
-                        write_byte_addr    .eq(write_byte_addr + write_odd + self.EVENT_SIZE_BYTES),
+                        write_byte_addr    .eq(next_byte_addr + self.EVENT_SIZE_BYTES),
                     ]
                     m.d.sync += [
                         fifo_words_pending .eq(self.EVENT_SIZE_WORDS),
@@ -286,7 +305,7 @@ class USBAnalyzer(Elaboratable):
                         mem_write_port.en    .eq(Mux(write_odd, 0b01, 0b10)),
                     ]
                     m.d.sync += [
-                        fifo_words_pending   .eq(fifo_words_pending + ~write_odd),
+                        fifo_words_pending   .eq(fifo_words_pending + Mux(byte_offset == 0, self.alignment // 2, 0)),
                     ]
                     m.next = "IDLE"
                 with m.Elif(write_header):
