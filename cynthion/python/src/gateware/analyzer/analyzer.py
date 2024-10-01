@@ -14,7 +14,7 @@ from enum              import IntEnum
 from luna.gateware.stream import StreamInterface
 from luna.gateware.test   import LunaGatewareTestCase, usb_domain_test_case
 
-from .fifo import Stream16to8, StreamFIFO, AsyncFIFOReadReset
+from .fifo import StreamWidthConverter, StreamFIFO, AsyncFIFOReadReset
 
 
 class USBAnalyzer(Elaboratable):
@@ -393,7 +393,7 @@ class USBAnalyzerTest(USBAnalyzerTestBase):
         m.submodules.analyzer = self.analyzer = USBAnalyzer(utmi_interface=self.utmi, mem_depth=128)
 
         reset_on_start = ResetInserter(self.analyzer.discarding)
-        m.submodules.s16to8 = s16to8 = reset_on_start(Stream16to8())
+        m.submodules.s16to8 = s16to8 = reset_on_start(StreamWidthConverter(in_width=16, out_width=8))
         m.submodules.clk_conv = clk_conv = StreamFIFO(
             AsyncFIFOReadReset(width=8, depth=4, r_domain="usb", w_domain="sync"))
         m.d.comb += [
@@ -569,7 +569,7 @@ class USBAnalyzerStackTest(USBAnalyzerTestBase):
         m.submodules.translator = self.translator = UTMITranslator(ulpi=self.ulpi, handle_clocking=False)
         m.submodules.analyzer   = self.analyzer   = USBAnalyzer(utmi_interface=self.translator, mem_depth=128)
         reset_on_start = ResetInserter(self.analyzer.discarding)
-        m.submodules.s16to8 = s16to8 = reset_on_start(Stream16to8())
+        m.submodules.s16to8 = s16to8 = reset_on_start(StreamWidthConverter(in_width=16, out_width=8))
         m.submodules.clk_conv = clk_conv = StreamFIFO(
             AsyncFIFOReadReset(width=8, depth=4, r_domain="usb", w_domain="sync"))
         m.d.comb += [

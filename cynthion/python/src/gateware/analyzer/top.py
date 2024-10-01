@@ -41,7 +41,7 @@ from usb_protocol.emitters.descriptors.standard import get_string_descriptor
 from usb_protocol.types.descriptors.microsoft10 import RegistryTypes
 
 from .analyzer                           import USBAnalyzer
-from .fifo                               import Stream16to8, StreamFIFO, AsyncFIFOReadReset, HyperRAMPacketFIFO
+from .fifo                               import StreamWidthConverter, StreamFIFO, AsyncFIFOReadReset, HyperRAMPacketFIFO
 
 import cynthion
 
@@ -334,7 +334,7 @@ class USBAnalyzerApplet(Elaboratable):
             HyperRAMPacketFIFO(out_fifo_depth=128))
 
         # Convert the 16-bit stream into an 8-bit one for output.
-        m.submodules.s16to8 = s16to8 = reset_on_start(Stream16to8())
+        m.submodules.s16to8 = s16to8 = reset_on_start(StreamWidthConverter(in_width=16, out_width=8))
 
         # Add a special stream clock converter for 'sync' to 'usb' crossing.
         m.submodules.clk_conv = clk_conv = StreamFIFO(

@@ -164,43 +164,78 @@ class HyperRAMPacketFIFO(Elaboratable):
         return m
 
 
-class Stream16to8(Elaboratable):
-    def __init__(self, msb_first=True):
-        self.msb_first = msb_first
-        self.input     = StreamInterface(payload_width=16)
-        self.output    = StreamInterface(payload_width=8)
+class StreamWidthConverter(Elaboratable):
+    def __init__(self, in_width=16, out_width=8):
+        # Sanity checks
+        if in_width < out_width and out_width % in_width:
+            raise ValueError(f"Length {out_width} is not multiple of length {in_width}")
+        if in_width > out_width and in_width % out_width:
+            raise ValueError(f"Length {in_width} is not divisible by length {out_width}")
+        self.in_width  = in_width
+        self.out_width = out_width
+
+        self.input     = StreamInterface(payload_width=in_width)
+        self.output    = StreamInterface(payload_width=out_width)
 
     def elaborate(self, platform):
+
+        if self.in_width < self.out_width:
+            ratio = self.out_width // self.in_width
+            m = self.upsize(ratio)
+        elif self.in_width > self.out_width:
+            ratio = self.in_width // self.out_width
+            m = self.downsize(ratio)
+        else:
+            m = Module()
+            m.d.comb += self.output.stream_eq(self.input)
+        return m
+
+    def upsize(self, ratio):
+        m = Module()
+        
+        sreg  = Signal((ratio)*len(self.input.payload), reset_less=True)
+        count = Signal(range(ratio))  # number of input words in sreg
+
+        with m.If(self.input.valid & self.input.ready):
+            m.d.sync += sreg.eq(Cat(self.input.payload, sreg))
+            m.d.sync += count.eq(count+1)
+
+        with m.If(count != ratio - 1):
+            m.d.comb += self.input.ready.eq(1)
+            with m.If(self.output.ready | ~self.output.valid):
+                m.d.sync += self.output.valid.eq(0)
+        
+        with m.Elif(self.output.ready | ~self.output.valid):
+            m.d.comb += self.input.ready.eq(1)
+            m.d.sync += self.output.valid.eq(self.input.valid)
+            with m.If(self.input.valid):
+                m.d.sync += self.output.payload.eq(Cat(self.input.payload, sreg))
+                m.d.sync += count.eq(0)
+        
+        return m
+
+    def downsize(self, ratio):
         m = Module()
 
-        input_data = self.input.payload
-        if self.msb_first:
-            input_data = Cat(input_data[8:16], input_data[0:8])
+        sreg       = Signal((ratio-1)*len(self.output.payload), reset_less=True)
+        sreg_valid = Signal()
+        count      = Signal(range(ratio))  # number of output words left in sreg
+        
+        m.d.comb += sreg_valid.eq(count != 0)
+        m.d.comb += self.input.ready.eq((self.output.ready | ~self.output.valid) & ~sreg_valid)
 
-        odd_byte   = Signal()
-        data_shift = Signal.like(self.input.payload)  # shift register
-        m.d.comb  += self.output.payload.eq(data_shift[0:8])
-
-        # When the output stream is not stalled...
         with m.If(self.output.ready | ~self.output.valid):
+            m.d.sync += self.output.valid.eq(0)
 
-            # If odd_byte is asserted, send the buffered second byte
-            with m.If(odd_byte):
-                m.d.sync += [
-                    data_shift          .eq(data_shift[8:]),
-                    self.output.valid   .eq(1),
-                    odd_byte            .eq(0),
-                ]
-
-            # Otherwise, consume a new word from the input stream
-            with m.Else():
-                m.d.comb += self.input.ready .eq(1)
-                m.d.sync += self.output.valid.eq(self.input.valid)
-                with m.If(self.input.valid):
-                    m.d.sync += [
-                        data_shift .eq(input_data),
-                        odd_byte   .eq(1),
-                    ]
+            with m.If(sreg_valid):
+                m.d.sync += Cat(sreg, self.output.payload).eq(sreg << self.out_width)
+                m.d.sync += self.output.valid.eq(1)
+                m.d.sync += count.eq(count-1)
+                
+            with m.Elif(self.input.valid):
+                m.d.sync += Cat(sreg, self.output.payload).eq(self.input.payload)
+                m.d.sync += self.output.valid.eq(1)
+                m.d.sync += count.eq(ratio-1)
 
         return m
 
