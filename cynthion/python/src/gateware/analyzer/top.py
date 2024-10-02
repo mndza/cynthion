@@ -42,7 +42,7 @@ from usb_protocol.emitters.descriptors.standard import get_string_descriptor
 from usb_protocol.types.descriptors.microsoft10 import RegistryTypes
 
 from .analyzer                           import USBAnalyzer
-from .fifo                               import StreamWidthConverter, StreamFIFO, AsyncFIFOReadReset, HyperRAMPacketFIFO
+from .fifo                               import StreamWidthConverter, StreamFIFO, AsyncFIFOReadReset, HyperRAMPacketFIFO, PaddingRemover
 
 import cynthion
 
@@ -353,6 +353,9 @@ class USBAnalyzerApplet(Elaboratable):
             # Convert the 16-bit stream into an 8-bit one for output.
             m.submodules.s16to8 = s16to8 = reset_on_start(DomainRenamer("usb")(StreamWidthConverter(in_width=32, out_width=8)))
 
+            # Remove padding due to alignment.
+            m.submodules.pad_rm = pad_rm = reset_on_start(DomainRenamer("usb")(PaddingRemover(alignment=4)))
+
             m.d.comb += [
                 # USB stream pipeline.
                 s16to32.input               .stream_eq(analyzer.stream),
@@ -360,7 +363,8 @@ class USBAnalyzerApplet(Elaboratable):
                 sync_to_usb.fifo.ext_rst    .eq(analyzer.discarding),
                 psram_fifo.input            .stream_eq(sync_to_usb.output),
                 s16to8.input                .stream_eq(psram_fifo.output),
-                stream_ep.stream            .stream_eq(s16to8.output),
+                pad_rm.input                .stream_eq(s16to8.output),
+                stream_ep.stream            .stream_eq(pad_rm.output),
             ]
 
         else:
@@ -381,11 +385,15 @@ class USBAnalyzerApplet(Elaboratable):
             m.submodules.clk_conv = clk_conv = StreamFIFO(
                 AsyncFIFOReadReset(width=8, depth=4, r_domain="usb", w_domain="sync"))
 
+            # Remove padding due to alignment.
+            m.submodules.pad_rm = pad_rm = reset_on_start(PaddingRemover(alignment=2))
+
             m.d.comb += [
                 # USB stream pipeline.
                 psram_fifo.input            .stream_eq(analyzer.stream),
                 s16to8.input                .stream_eq(psram_fifo.output),
-                clk_conv.input              .stream_eq(s16to8.output),
+                pad_rm.input                .stream_eq(s16to8.output),
+                clk_conv.input              .stream_eq(pad_rm.output),
                 clk_conv.fifo.ext_rst       .eq(analyzer.discarding),
                 stream_ep.stream            .stream_eq(clk_conv.output),
             ]

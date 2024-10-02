@@ -4,7 +4,7 @@
 # Copyright (c) 2024 Great Scott Gadgets <info@greatscottgadgets.com>
 # SPDX-License-Identifier: BSD-3-Clause
 
-from amaranth                       import Elaboratable, Module, Signal, Cat, Memory, ResetSignal
+from amaranth                       import Elaboratable, Module, Signal, Cat, Mux, Memory, ResetSignal
 from amaranth.lib.fifo              import SyncFIFOBuffered, FIFOInterface
 from amaranth.lib.coding            import GrayDecoder, GrayEncoder
 from amaranth.hdl.ast               import Assume, Initial
@@ -244,6 +244,75 @@ class StreamWidthConverter(Elaboratable):
                 m.d.sync += Cat(sreg, self.output.payload).eq(self.input.payload)
                 m.d.sync += self.output.valid.eq(1)
                 m.d.sync += count.eq(ratio-1)
+
+        return m
+
+
+class PaddingRemover(Elaboratable):
+    def __init__(self, alignment=2):
+        assert alignment in (2, 4)
+        self.alignment = alignment
+        self.input     = StreamInterface(payload_width=8)
+        self.output    = StreamInterface(payload_width=8)
+
+    def elaborate(self, platform):
+        m = Module()
+
+        length = Signal(16)
+        offset = Signal(range(self.alignment))
+
+        m.d.comb += self.output.stream_eq(self.input)
+        with m.If(self.input.ready & self.input.valid):
+            m.d.sync += offset.eq(offset + 1)
+
+        with m.FSM():
+
+            with m.State("LENGTH_0"):
+                with m.If(self.input.ready & self.input.valid):
+                    with m.If(self.input.payload == 0xFF):
+                        m.d.sync += length.eq(0)
+                        m.next = "EVENT"
+                    with m.Else():
+                        m.d.sync += length.word_select(1, 8).eq(self.input.payload)
+                        m.next = "LENGTH_1"
+
+            with m.State("LENGTH_1"):
+                with m.If(self.input.ready & self.input.valid):
+                    m.d.sync += length.word_select(0, 8).eq(self.input.payload)
+                    m.next = "TIMESTAMP_0"
+
+            with m.State("EVENT"):
+                with m.If(self.input.ready & self.input.valid):
+                    m.next = "TIMESTAMP_0"
+
+            with m.State("TIMESTAMP_0"):
+                with m.If(self.input.ready & self.input.valid):
+                    m.next = "TIMESTAMP_1"
+
+            with m.State("TIMESTAMP_1"):
+                with m.If(self.input.ready & self.input.valid):
+                    with m.If(length == 0):
+                        m.next = "LENGTH_0"
+                    with m.Else():
+                        m.next = "PAYLOAD"
+
+            with m.State("PAYLOAD"):
+                with m.If(self.input.ready & self.input.valid):
+                    m.d.sync += length.eq(length - 1)
+                    with m.If(length == 1):
+                        with m.If(offset == self.alignment - 1):
+                            m.next = "LENGTH_0"
+                        with m.Else():
+                            m.next = "PADDING"
+
+            with m.State("PADDING"):
+                m.d.comb += [
+                    self.output.valid.eq(0),
+                    self.input.ready .eq(1),
+                ]
+                with m.If(self.input.ready & self.input.valid):
+                    with m.If(offset == self.alignment - 1):
+                        m.next = "LENGTH_0"
 
         return m
 
