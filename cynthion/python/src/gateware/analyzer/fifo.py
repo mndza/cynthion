@@ -40,9 +40,12 @@ class StreamFIFO(Elaboratable):
 
 
 class HyperRAMPacketFIFO(Elaboratable):
-    def __init__(self, in_fifo_depth=128, out_fifo_depth=128):
-        self.input  = StreamInterface(payload_width=16)
-        self.output = StreamInterface(payload_width=16)
+    def __init__(self, in_fifo_depth=128, out_fifo_depth=128, interface=None):
+        data_width = len(interface.read_data) if interface is not None else 16
+        self.data_width = data_width
+        self.interface = interface
+        self.input  = StreamInterface(payload_width=data_width)
+        self.output = StreamInterface(payload_width=data_width)
         self.in_fifo_depth  = max(in_fifo_depth, 1)
         # A minimum output FIFO depth of 2 prevents data loss during consumer stalls.
         self.out_fifo_depth = max(out_fifo_depth, 2)
@@ -51,11 +54,15 @@ class HyperRAMPacketFIFO(Elaboratable):
         m = Module()
 
         # HyperRAM submodules
-        ram_bus         = platform.request('ram')
-        psram_phy       = HyperRAMPHY(bus=ram_bus)
-        psram           = HyperRAMInterface(phy=psram_phy.phy)
-        m.submodules   += [psram_phy, psram]
-
+        if self.interface is None:
+            ram_bus         = platform.request('ram')
+            psram_phy       = HyperRAMPHY(bus=ram_bus)
+            psram           = HyperRAMInterface(phy=psram_phy.phy)
+            m.submodules   += [psram_phy, psram]
+            m.d.comb       += ram_bus.reset.o.eq(0)
+        else:
+            psram           = self.interface
+        
         # HyperRAM status
         depth         = 2 ** 22
         write_address = Signal(range(depth))
@@ -70,21 +77,22 @@ class HyperRAMPacketFIFO(Elaboratable):
 
         # Update word count and pointers using the write and read strobes.
         m.d.sync += word_count.eq(word_count - psram.read_ready + psram.write_ready)
+        addr_incr = self.data_width // 16
+        assert addr_incr in (1, 2)
         with m.If(psram.read_ready):
-            m.d.sync += read_address.eq(read_address + 1)
+            m.d.sync += read_address.eq(read_address + addr_incr)
         with m.If(psram.write_ready):
-            m.d.sync += write_address.eq(write_address + 1)
+            m.d.sync += write_address.eq(write_address + addr_incr)
 
         # The input buffer accumulates data for a write burst of the desired length.
-        m.submodules.in_fifo = in_fifo = SyncFIFOBuffered(width=16, depth=self.in_fifo_depth)
+        m.submodules.in_fifo = in_fifo = SyncFIFOBuffered(width=self.data_width, depth=self.in_fifo_depth)
 
         # This output buffer prevents data loss during consumer stalls. It can also be used
         # to gather entire bursts from the HyperRAM if `out_fifo_depth` is big enough.
-        m.submodules.out_fifo = out_fifo = SyncFIFOBuffered(width=16, depth=self.out_fifo_depth)
+        m.submodules.out_fifo = out_fifo = SyncFIFOBuffered(width=self.data_width, depth=self.out_fifo_depth)
 
         # Hook up our PSRAM.
         m.d.comb += [
-            ram_bus.reset.o       .eq(0),
             psram.single_page     .eq(0),
             psram.register_space  .eq(0),
 

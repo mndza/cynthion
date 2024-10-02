@@ -34,6 +34,7 @@ from luna.gateware.interface.ulpi        import UTMITranslator
 from luna.gateware.usb.usb2.control      import USBControlEndpoint
 from luna.gateware.usb.request.standard  import StandardRequestHandler
 from luna.gateware.usb.request.windows   import MicrosoftOS10DescriptorCollection, MicrosoftOS10RequestHandler
+from luna.gateware.interface.psram       import HyperRAMDQSInterface, HyperRAMDQSPHY
 
 from apollo_fpga.gateware.advertiser     import ApolloAdvertiser, ApolloAdvertiserRequestHandler
 
@@ -45,6 +46,8 @@ from .fifo                               import StreamWidthConverter, StreamFIFO
 
 import cynthion
 
+
+HYPERRAM_DQS         = True
 
 USB_SPEED_HIGH       = 0b00
 USB_SPEED_FULL       = 0b01
@@ -325,20 +328,67 @@ class USBAnalyzerApplet(Elaboratable):
         )
         usb.add_endpoint(stream_ep)
 
-        # Create a USB analyzer.
-        m.submodules.analyzer = analyzer = USBAnalyzer(utmi_interface=utmi)
+        if HYPERRAM_DQS:
 
-        # Follow this with a HyperRAM FIFO for additional buffering.
-        reset_on_start = ResetInserter(analyzer.discarding)
-        m.submodules.psram_fifo = psram_fifo = reset_on_start(
-            HyperRAMPacketFIFO(out_fifo_depth=128))
+            # Create a USB analyzer.
+            m.submodules.analyzer = analyzer = USBAnalyzer(utmi_interface=utmi, alignment=4)
 
-        # Convert the 16-bit stream into an 8-bit one for output.
-        m.submodules.s16to8 = s16to8 = reset_on_start(StreamWidthConverter(in_width=16, out_width=8))
+            # Follow this with a HyperRAM FIFO for additional buffering.
+            reset_on_start = ResetInserter(analyzer.discarding)
 
-        # Add a special stream clock converter for 'sync' to 'usb' crossing.
-        m.submodules.clk_conv = clk_conv = StreamFIFO(
-            AsyncFIFOReadReset(width=8, depth=4, r_domain="usb", w_domain="sync"))
+            # Convert the 16-bit stream into an 32-bit one for interfacing with the HyperRAM.
+            m.submodules.s16to32 = s16to32 = reset_on_start(StreamWidthConverter(in_width=16, out_width=32))
+
+            m.submodules.sync_to_usb = sync_to_usb = StreamFIFO(AsyncFIFOReadReset(width=32, depth=4, w_domain="sync", r_domain="usb"))
+
+            ram_bus = platform.request('ram', dir={'rwds':'-', 'dq':'-', 'cs':'-'})
+            psram_phy = DomainRenamer({"sync": "usb", "fast": "sync"})(HyperRAMDQSPHY(bus=ram_bus))
+            psram = DomainRenamer({"sync": "usb", "fast": "sync"})(HyperRAMDQSInterface(phy=psram_phy.phy))
+            m.d.comb += ram_bus.reset.o.eq(0)
+            m.submodules += [psram_phy, psram]
+
+            m.submodules.psram_fifo = psram_fifo = reset_on_start(DomainRenamer("usb")(
+                HyperRAMPacketFIFO(interface=psram)))
+
+            # Convert the 16-bit stream into an 8-bit one for output.
+            m.submodules.s16to8 = s16to8 = reset_on_start(DomainRenamer("usb")(StreamWidthConverter(in_width=32, out_width=8)))
+
+            m.d.comb += [
+                # USB stream pipeline.
+                s16to32.input               .stream_eq(analyzer.stream),
+                sync_to_usb.input           .stream_eq(s16to32.output),
+                sync_to_usb.fifo.ext_rst    .eq(analyzer.discarding),
+                psram_fifo.input            .stream_eq(sync_to_usb.output),
+                s16to8.input                .stream_eq(psram_fifo.output),
+                stream_ep.stream            .stream_eq(s16to8.output),
+            ]
+
+        else:
+
+            # Create a USB analyzer.
+            m.submodules.analyzer = analyzer = USBAnalyzer(utmi_interface=utmi, alignment=2)
+
+            # Follow this with a HyperRAM FIFO for additional buffering.
+            reset_on_start = ResetInserter(analyzer.discarding)
+
+            m.submodules.psram_fifo = psram_fifo = reset_on_start(
+                HyperRAMPacketFIFO(out_fifo_depth=128))
+
+            # Convert the 16-bit stream into an 8-bit one for output.
+            m.submodules.s16to8 = s16to8 = reset_on_start(StreamWidthConverter(in_width=16, out_width=8))
+
+            # Add a special stream clock converter for 'sync' to 'usb' crossing.
+            m.submodules.clk_conv = clk_conv = StreamFIFO(
+                AsyncFIFOReadReset(width=8, depth=4, r_domain="usb", w_domain="sync"))
+
+            m.d.comb += [
+                # USB stream pipeline.
+                psram_fifo.input            .stream_eq(analyzer.stream),
+                s16to8.input                .stream_eq(psram_fifo.output),
+                clk_conv.input              .stream_eq(s16to8.output),
+                clk_conv.fifo.ext_rst       .eq(analyzer.discarding),
+                stream_ep.stream            .stream_eq(clk_conv.output),
+            ]
 
         m.d.comb += [
             # Connect enable signal to host-controlled state register.
@@ -349,13 +399,6 @@ class USBAnalyzerApplet(Elaboratable):
 
             # Discard data buffered by endpoint when the analyzer discards its data.
             stream_ep.discard           .eq(analyzer.discarding),
-
-            # USB stream pipeline.
-            psram_fifo.input            .stream_eq(analyzer.stream),
-            s16to8.input                .stream_eq(psram_fifo.output),
-            clk_conv.input              .stream_eq(s16to8.output),
-            clk_conv.fifo.ext_rst       .eq(analyzer.discarding),
-            stream_ep.stream            .stream_eq(clk_conv.output),
 
             usb.connect                 .eq(1),
 
